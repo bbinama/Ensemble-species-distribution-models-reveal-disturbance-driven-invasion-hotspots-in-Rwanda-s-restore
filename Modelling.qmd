@@ -1,0 +1,495 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+library(sf)
+library(ggplot2)
+library(ggspatial)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+```
+
+#### 2. **Load Rwanda shapefile and Gishwati-Mukura reserve shapefile**
+
+If you don’t already have shapefiles:Get **Rwanda** boundaries from
+`rnaturalearth`.
+
+-   Use shapefiles for **Gishwati-Mukura** Biosphere (download from a
+    reliable GIS source or governmental portal).
+
+```{r}
+
+
+# Set Rwanda-specific projection (UTM Zone 35S)
+rwanda_crs <- 32735  # EPSG:32735 for Rwanda (WGS 84 / UTM zone 35S)
+
+# Get Rwanda map and reproject
+rwanda <- ne_countries(scale = "medium", country = "Rwanda", returnclass = "sf") %>%
+  st_transform(crs = rwanda_crs)
+
+# Set directory path
+shapefile_dir <- "/Users/blaise/Rwanda_National Parks/Code_Species_Modeling/Gishwati_Mukura"
+
+# Read and reproject Gishwati and Mukura shapefiles
+gishwati <- st_read(file.path(shapefile_dir, "Gishwati_core.shp")) %>%
+  st_transform(crs = rwanda_crs)
+mukura <- st_read(file.path(shapefile_dir, "Mukura_core.shp")) %>%
+  st_transform(crs = rwanda_crs)
+gishwati_buffer <- st_read(file.path(shapefile_dir, "Gishwati_buffer.shp")) %>%
+  st_transform(crs = rwanda_crs)
+mukura_buffer <- st_read(file.path(shapefile_dir, "Mukura_buffer.shp")) %>%
+  st_transform(crs = rwanda_crs)
+
+
+```
+
+```{r}
+library(dplyr)
+gishwati <- gishwati %>% mutate(source = "Gishwati_core") %>% select(source, geometry)
+mukura <- mukura %>% mutate(source = "Mukura_core") %>% select(source, geometry)
+gishwati_buffer <- gishwati_buffer %>% mutate(source = "Gishwati_buffer") %>% select(source, geometry)
+mukura_buffer <- mukura_buffer %>% mutate(source = "Mukura_buffer") %>% select(source, geometry)
+
+# Combine all with a source column
+gmb_reserve <- rbind(gishwati, mukura, gishwati_buffer, mukura_buffer)
+
+```
+
+```{r}
+unique(st_geometry_type(gmb_reserve))
+
+
+
+
+```
+
+```{r}
+library(sf)
+library(dplyr)
+
+# 1. Set Rwanda-specific projection (WGS 84 / UTM zone 35S)
+#rwanda_crs <- 32735  # EPSG code
+
+# 2. Set shapefile directory path
+#shapefile_dir <- "/Users/blaise/Rwanda_National Parks/Code_Species_Modeling/Gishwati_Mukura"
+
+# 3. Read all necessary shapefiles
+rwanda_boundary <- st_read(file.path(shapefile_dir, "Rwanda_boundary.shp"))
+lakes           <- st_read(file.path(shapefile_dir, "Lakes.shp"))
+lake_kivu       <- st_read(file.path(shapefile_dir, "Lake_Kivu.shp"))
+volcanoes       <- st_read(file.path(shapefile_dir, "Volcanoes.shp"))
+akagera         <- st_read(file.path(shapefile_dir, "Akagera.shp"))
+
+# 4. Reproject all to Rwanda UTM CRS (EPSG:32735)
+rwanda_boundary <- st_transform(rwanda_boundary, crs = rwanda_crs)
+lakes           <- st_transform(lakes,           crs = rwanda_crs)
+lake_kivu       <- st_transform(lake_kivu,       crs = rwanda_crs)
+volcanoes       <- st_transform(volcanoes,       crs = rwanda_crs)
+akagera         <- st_transform(akagera,         crs = rwanda_crs)
+
+# 5. Store all as named layers for easy access
+rwanda_layers <- list(
+  boundary   = rwanda_boundary,
+  lakes      = lakes,
+  lake_kivu  = lake_kivu,
+  volcanoes  = volcanoes,
+  akagera    = akagera
+)
+
+# 6. If you want a simple variable called `rwanda` for mapping:
+rwanda <- rwanda_boundary
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot() +
+  geom_sf(data = rwanda_layers$boundary, fill = "white", color = "black") +
+  geom_sf(data = rwanda_layers$lakes, fill = "lightblue", color = NA) +
+  geom_sf(data = rwanda_layers$lake_kivu, fill = "lightblue", color = NA) +
+  geom_sf(data = rwanda_layers$akagera, fill = "darkgreen", alpha = 0.3) +
+  geom_sf(data = rwanda_layers$volcanoes, color = "darkgreen", size = 1) +
+  coord_sf(crs = rwanda_crs) +
+  theme_minimal() +
+  labs(title = "Rwanda Map with Key Features")
+
+```
+
+```{r}
+# Read FIA plot data from CSV
+FiaPlot_dir <- "/Users/blaise/Rwanda_National Parks/Code_Species_Modeling/code"
+fia_csv <- read.csv(file.path(FiaPlot_dir, "groundtruth_data.csv"))
+
+str(fia_csv)
+
+```
+
+Add a negative sign to those columns for only "Gishwati"
+
+```{r}
+library(dplyr)
+
+fia_csv <- fia_csv %>%
+  mutate(across(
+    .cols = c(Corner_1.Latitude,  Corner_2.Latitude, Corner_3.Latitude, Corner_4.Latitude),
+    .fns = ~ ifelse(Site == "Gishwati", -abs(.), .)
+  ))
+
+```
+
+Replace wrong value
+
+```{r}
+fia_csv<- fia_csv %>%
+  mutate(
+    Corner_1.Latitude = ifelse(Polygon_ID == "P112", -1.96886, Corner_1.Latitude),
+    Corner_4.Latitude = ifelse(Polygon_ID == "P104", -2.02194, Corner_4.Latitude),
+     Corner_2.Longitude = ifelse(Polygon_ID == "GMT004", 29.38399, Corner_2.Longitude)
+  )
+
+```
+
+```{r}
+# Convert FIA plot data to sf object and reproject
+fia_plots <- st_as_sf(fia_csv, coords = c("Central_coordinate_Longitude", "Central_coordinate_Latitude"), crs = 4326) %>%
+  st_transform(crs = rwanda_crs)
+```
+
+```{r}
+library(dplyr)
+
+# Remove plots P059 and P095
+fia_csv <- fia_csv %>%
+  filter(!Polygon_ID %in% c("P059", "P095"))
+
+```
+
+# Recalculate central coordinates as the mean of four corners
+
+```{r}
+
+# Recalculate central coordinates as the mean of four corners
+fia_csv  <- fia_csv %>%
+  mutate(
+    Central_coordinate_Latitude = rowMeans(select(., Corner_1.Latitude, Corner_2.Latitude, Corner_3.Latitude, Corner_4.Latitude), na.rm = TRUE),
+    Central_coordinate_Longitude = rowMeans(select(., Corner_1.Longitude, Corner_2.Longitude, Corner_3.Longitude, Corner_4.Longitude), na.rm = TRUE)
+  )
+
+# Convert to sf using new central coordinates
+fia_sf <- st_as_sf(fia_csv , coords = c("Central_coordinate_Longitude", "Central_coordinate_Latitude"), crs = 4326)
+
+# Transform to Rwanda UTM CRS
+fia_plots <- st_transform(fia_sf, crs = 32735)
+
+```
+
+```{r}
+
+# Define typical Rwanda coordinate bounds
+library(dplyr)
+
+# Define Rwanda's latitude and longitude bounds
+lat_bounds <- c(-2.9, -1.0)
+lon_bounds <- c(28.8, 30.9)
+
+# Add flag column
+fia_flagged <- fia_csv  %>%
+  mutate(
+    coord_flag = ifelse(
+      Corner_1.Latitude < lat_bounds[1] | Corner_1.Latitude > lat_bounds[2] |
+      Corner_2.Latitude < lat_bounds[1] | Corner_2.Latitude > lat_bounds[2] |
+      Corner_3.Latitude < lat_bounds[1] | Corner_3.Latitude > lat_bounds[2] |
+      Corner_4.Latitude < lat_bounds[1] | Corner_4.Latitude > lat_bounds[2] |
+      Central_coordinate_Latitude < lat_bounds[1] | Central_coordinate_Latitude > lat_bounds[2] |
+
+      Corner_1.Longitude < lon_bounds[1] | Corner_1.Longitude > lon_bounds[2] |
+      Corner_2.Longitude < lon_bounds[1] | Corner_2.Longitude > lon_bounds[2] |
+      Corner_3.Longitude < lon_bounds[1] | Corner_3.Longitude > lon_bounds[2] |
+      Corner_4.Longitude < lon_bounds[1] | Corner_4.Longitude > lon_bounds[2] |
+      Central_coordinate_Longitude < lon_bounds[1] | Central_coordinate_Longitude > lon_bounds[2],
+      "Suspicious", "OK"
+    )
+  )
+
+# Save flagged dataset to CSV
+write.csv(fia_flagged, "fia_flagged_coordinates2.csv", row.names = FALSE)
+
+# Optionally print summary
+table(fia_flagged$coord_flag)
+
+
+```
+
+Updates\
+
+```{r}
+library(ggplot2)
+library(sf)
+library(ggspatial)
+library(patchwork)
+library(grid)
+```
+
+\
+Updates map
+
+```{r}
+# Map of Rwanda with Study Area (no FIA plots)
+fig_rwanda <- ggplot() +
+  geom_sf(data = rwanda, fill = "white", color = "black") +
+  geom_sf(data = gmb_reserve, fill = "gray60", color = "black") +
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "tr", which_north = "true",
+                         style = north_arrow_fancy_orienteering) +
+  labs(
+    title = "Fig. 1: Study Region within Rwanda",
+    subtitle = "Shaded area shows the Gishwati-Mukura Biosphere Reserve"
+  ) +
+  theme_minimal()
+
+# Print map
+print(fig_rwanda)
+
+```
+
+### **Zoomed-in Study Area with FIA Plots**
+
+This figure is focused for local detail and includes plot locations.
+
+```{r}
+# Zoomed-in Gishwati-Mukura Reserve Map with FIA Plots
+fig_study_area <- ggplot() +
+  geom_sf(data = gmb_reserve, fill = "gray60", color = "black") +
+  geom_sf(data = fia_plots, color = "black", size = 2) +
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "tr", which_north = "true",
+                         style = north_arrow_fancy_orienteering) +
+  labs(
+    title = "Fig. 2: Gishwati-Mukura Reserve (Zoomed)",
+    subtitle = "Black dots represent FIA plots"
+  ) +
+  theme_minimal()
+
+# Print zoomed-in study area
+print(fig_study_area)
+
+```
+
+Deep analysis
+
+```{r}
+str(fia_csv)
+```
+
+## **Step 1: Define Site Boundaries**
+
+## 
+
+`gishwati.shp`
+
+`mukura.shp`
+
+Use them as the spatial extent for extraction.
+
+**Step 2: Obtain Spatial Datasets**
+
+A. **Soil and Habitat Data**
+
+You need **vector data** (ideally from Rwandan or global sources):
+**Soil**: FAO's **Harmonized World Soil Database (HWSD)** or
+**SoilGrids** (global, high-resolution)
+
+-   Download: <https://soilgrids.org>
+
+    **Habitat/Land Cover**: **Copernicus Land Cover (100m)** or **ESA
+    WorldCover (10m)**: <https://esa-worldcover.org>
+
+    Rwanda-specific land cover: Check **Rwanda Land Management and Use
+    Authority (RLMUA)** or Rwanda Spatial Data Portal
+
+    B. **Climate Data**
+
+Use **WorldClim v2.1** for:**Temperature**
+
+**Precipitation**
+
+Resolution: up to 1 km, but can be resampled.
+Download: https://www.worldclim.org/data/worldclim21.html
+
+Step 3. Process Data in R
+
+```{r}
+library(sf)
+library(terra)
+library(dplyr)
+
+# Load shapefiles
+gishwati <- st_read("path_to/Gishwati_core.shp")
+mukura <- st_read("path_to/Mukura_core.shp")
+study_area <- st_union(gishwati, mukura)
+
+# Transform to common CRS (e.g., UTM 35S)
+study_area <- st_transform(study_area, crs = 32735)
+
+```
+
+A. Download and Clip Soil Raster (e.g., from SoilGrids)
+
+```{r}
+# Load a raster soil layer (e.g., organic carbon or texture)
+soil_raster <- rast("path_to/soil_data.tif")
+soil_raster <- project(soil_raster, study_area)
+soil_crop <- crop(soil_raster, vect(study_area))
+soil_mask <- mask(soil_crop, vect(study_area))
+
+```
+
+B. **Download and Clip Habitat/Land Cover**
+
+```{r}
+landcover <- rast("path_to/landcover.tif")
+landcover <- project(landcover, study_area)
+landcover_crop <- crop(landcover, vect(study_area))
+landcover_mask <- mask(landcover_crop, vect(study_area))
+
+```
+
+C. Download and Clip WorldClim Temperature & Precipitation
+
+```{r}
+# Load WorldClim Bio variables
+temp <- rast("wc2.1_30s_tavg.tif")  # Mean temp
+prec <- rast("wc2.1_30s_prec.tif")  # Precipitation
+
+temp_crop <- crop(temp, vect(study_area))
+temp_mask <- mask(temp_crop, vect(study_area))
+
+prec_crop <- crop(prec, vect(study_area))
+prec_mask <- mask(prec_crop, vect(study_area))
+
+```
+
+Step 4: Rasterize Vector Soil & Habitat to 20m Resolution
+
+```{r}
+# Create a 20x20m template raster
+template <- rast(extent(study_area), resolution = 20, crs = crs(study_area))
+
+# Rasterize a vector soil or habitat shapefile to 20m grid
+soil_vector <- st_read("path_to/soil_vector.shp")
+habitat_vector <- st_read("path_to/habitat_vector.shp")
+
+soil_raster20 <- rasterize(vect(soil_vector), template, field = "soil_type")
+habitat_raster20 <- rasterize(vect(habitat_vector), template, field = "habitat_type")
+
+```
+
+Step 5: Export Processed Rasters or Extract for Plots
+
+```{r}
+writeRaster(soil_raster20, "soil_20m.tif", overwrite = TRUE)
+writeRaster(habitat_raster20, "habitat_20m.tif", overwrite = TRUE)
+writeRaster(temp_mask, "temperature.tif", overwrite = TRUE)
+writeRaster(prec_mask, "precipitation.tif", overwrite = TRUE)
+
+```
+
+Or extract data for plot coordinates:
+
+```{r}
+fia_coords <- st_as_sf(fia_csv, coords = c("Longitude", "Latitude"), crs = 4326)
+fia_coords <- st_transform(fia_coords, crs = 32735)
+
+fia_csv$soil <- terra::extract(soil_raster20, vect(fia_coords))$soil_type
+fia_csv$habitat <- terra::extract(habitat_raster20, vect(fia_coords))$habitat_type
+fia_csv$temp <- terra::extract(temp_mask, vect(fia_coords))[,2]  # mean temp
+fia_csv$prec <- terra::extract(prec_mask, vect(fia_coords))[,2]  # total prec
+
+```
+
+**Updates and provide a way to get this data because will be used as
+variables to corrate with invasive disstribution data**
+
+## **Load Required Packages**
+
+```{r}
+library(terra)
+library(sf)
+library(exactextractr)  # For raster value extraction at points
+
+```
+
+##  **Import Data**
+
+```{r}
+# Park boundaries (merge Gishwati and Mukura if separate)
+gishwati <- st_read("gishwati_shapefile.shp")
+mukura <- st_read("mukura_shapefile.shp")
+park_boundary <- st_union(gishwati, mukura)  # Combined park polygon
+
+# WorldCover land cover raster (download ESA tile for Rwanda)
+worldcover <- rast("ESA_WorldCover_2023_Rwanda.tif")
+
+```
+
+##  **Reclassify WorldCover Data**
+
+Identify WorldCover codes (e.g., **`10`** = cropland, **`30`** =
+herbaceous vegetation/pasture, **`50`** = urban/built-up):
+
+```{r}
+# Create masks for target classes
+developed <- classify(worldcover, cbind(c(50), 1))  # Built-up areas
+pasture_crop <- classify(worldcover, cbind(c(10,30), 1))  # Crops + pasture
+
+```
+
+## **Calculate Distance Rasters**
+
+```{r}
+# Distance to nearest developed area
+dist_developed <- distance(developed, park_boundary, unit = "m")
+
+# Distance to nearest pasture/crop area
+dist_pasture_crop <- distance(pasture_crop, park_boundary, unit = "m")
+
+```
+
+## **Extract Distances for Invasive Species Points**
+
+Assume invasive species data is a **`sf`** object with coordinates:
+
+```{r}
+invasive_species <- st_read("invasive_species_occurrences.shp")
+
+# Extract distance values at occurrence points
+invasive_species$dist_developed <- exact_extract(
+  dist_developed, 
+  invasive_species, 
+  'mean'  # Use 'mean' if points overlap multiple raster cells
+)
+
+invasive_species$dist_pasture_crop <- exact_extract(
+  dist_pasture_crop, 
+  invasive_species, 
+  'mean'
+)
+
+```
+
+## **Export for Correlation Analysis**
+
+```{r}
+# Save as CSV for statistical software
+write.csv(st_drop_geometry(invasive_species), "invasive_species_with_distances.csv")
+
+# Optional: Save distance rasters for spatial modeling
+writeRaster(dist_developed, "distance_to_developed.tif")
+writeRaster(dist_pasture_crop, "distance_to_pasture_crop.tif")
+
+```
